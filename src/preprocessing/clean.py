@@ -1,17 +1,20 @@
+import matplotlib.pyplot as plt
 import os
 import pandas as pd
 from pathlib import Path
 from scipy.stats import chi2_contingency
+from xgboost import XGBClassifier
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
 class CleanData: 
-    def __init__(self, data_paths_dict, missing_threshold): 
+    def __init__(self, data_paths_dict, missing_threshold, fi_threshold): 
         self.transaction_df = pd.read_csv(data_paths_dict["transaction"])
         self.identity_df = pd.read_csv(data_paths_dict["identity"])
         
         self.missing_threshold = missing_threshold
+        self.fi_threshold = fi_threshold
         
         
     def merge_data(self): 
@@ -40,11 +43,45 @@ class CleanData:
                 continue
 
             chi2, p, dof, expected = chi2_contingency(table)
-            results.append({"column": col, "p_value": p, "missing_rate": flag.mean()})
+            phi = flag.corr(df[target_col])
+            results.append({"column": col, "p_value": p, "phi": phi, "missing_rate": flag.mean()})
 
         result_df = pd.DataFrame(results).sort_values("p_value")
         result_df["significant"] = result_df["p_value"] < alpha
-        return result_df
+        
+        condition_significance = result_df["significant"] == True 
+        condition_phi = result_df["phi"].abs() >= 0.025
+        relevant_result_df = result_df[condition_significance & condition_phi].copy()
+        relevant_result_df_cols = relevant_result_df["column"].tolist()
+        if "isFraud" not in relevant_result_df_cols: 
+            relevant_result_df_cols.append("isFraud")  
+        return result_df, df[relevant_result_df_cols]
+    
+    def get_feature_importance(self, df, target_col="isFraud"): 
+        y = df[target_col]
+        X = df.drop(columns=[target_col])
+        
+        cat_cols = X.select_dtypes(include="object").columns
+        for col in cat_cols:
+            X[col] = X[col].astype("category")
+        
+        xgboost_model = XGBClassifier(n_estimators=200, max_depth=4, enable_categorical=True)
+        xgboost_model.fit(X, y)
+        importance = pd.Series(xgboost_model.feature_importances_, index=X.columns).sort_values(ascending=False)
+        no_features_importance = len(importance.index)
+        
+        nonzero_importance = importance[importance > 0]
+        no_features_nonzero_importance = len(nonzero_importance)
+        zero_importance = no_features_importance - no_features_nonzero_importance
+        print(f"There are {zero_importance} features of zero importance")
+        
+        cum_importance = nonzero_importance.cumsum() / nonzero_importance.sum()
+        keep_cols = cum_importance[cum_importance <= 0.95].index.tolist()
+        # add the feature that crosses the 95% line too
+        if len(keep_cols) < len(cum_importance):
+            keep_cols.append(cum_importance.index[len(keep_cols)])
+        print(f"Keeping {len(keep_cols)} features at 80% cumulative importance")
+        return df[keep_cols]
 
     def run_data(self): 
         df = self.merge_data()
@@ -52,9 +89,16 @@ class CleanData:
         print(f"Our merged dataset has {no_merged_obs} observations and {no_merged_features} features")
         df = self.drop_dead_columns(df)
         no_dropped_obs, no_dropped_features = df.shape
-        print(f"Our dataset with dropped dataset has {no_merged_obs} observations and {no_merged_features} features")
-        df = self.missingness_pvalues(df)
-        print(df.shape)
+        print(f"Our dropped dataset has {no_dropped_obs} observations and {no_dropped_features} features")
+        diff_dropped_features = no_merged_features - no_dropped_features
+        print(f"From the dropped dataset, we have dropped {diff_dropped_features} from the merged dataset with {self.missing_threshold} missing threshold.")
+        missing_pvalues_result_df, df = self.missingness_pvalues(df)
+        no_pvalue_obs, no_pvalue_features = df.shape
+        print(f"Our reduced dataset from excluding insignificant pvalues has {no_pvalue_obs} observations and {no_pvalue_features} features")
+    
+        df = self.get_feature_importance(df)
+        print(df.columns)
+        return missing_pvalues_result_df
         
     
 if __name__ == "__main__": 
