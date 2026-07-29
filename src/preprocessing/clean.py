@@ -1,8 +1,11 @@
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from scipy.stats import chi2_contingency
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 from xgboost import XGBClassifier
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -65,7 +68,12 @@ class CleanData:
         for col in cat_cols:
             X[col] = X[col].astype("category")
         
-        xgboost_model = XGBClassifier(n_estimators=200, max_depth=4, enable_categorical=True)
+        xgboost_model = XGBClassifier(
+            n_estimators=200, 
+            max_depth=4, 
+            enable_categorical=True,
+            random_state=42
+        )
         xgboost_model.fit(X, y)
         importance = pd.Series(xgboost_model.feature_importances_, index=X.columns).sort_values(ascending=False)
         no_features_importance = len(importance.index)
@@ -76,12 +84,51 @@ class CleanData:
         print(f"There are {zero_importance} features of zero importance")
         
         cum_importance = nonzero_importance.cumsum() / nonzero_importance.sum()
-        keep_cols = cum_importance[cum_importance <= 0.95].index.tolist()
+        keep_cols = cum_importance[cum_importance <= self.fi_threshold].index.tolist()
         # add the feature that crosses the 95% line too
         if len(keep_cols) < len(cum_importance):
             keep_cols.append(cum_importance.index[len(keep_cols)])
-        print(f"Keeping {len(keep_cols)} features at 80% cumulative importance")
+        print(f"Keeping {len(keep_cols)} features at {self.fi_threshold * 100}% cumulative importance")
+        
+        if "isFraud" not in keep_cols: 
+            keep_cols.append("isFraud")
         return df[keep_cols]
+    
+    def get_test_auc(self, df, target_col="isFraud"): 
+        y = df[target_col]
+        X = df.drop(columns=[target_col])
+        
+        cat_cols = X.select_dtypes(include="object").columns
+        for col in cat_cols:
+            X[col] = X[col].astype("category")
+        
+        stratified_kfold = StratifiedKFold(
+            n_splits=10,
+            shuffle=True,
+            random_state=42
+        )
+        
+        auc_scores = []
+        
+        for train_idx, test_idx in stratified_kfold.split(X, y): 
+            X_train = X.iloc[train_idx]
+            X_test = X.iloc[test_idx]
+            y_train = y.iloc[train_idx]
+            y_test = y.iloc[test_idx]
+
+            model = XGBClassifier(
+                n_estimators=200,
+                max_depth=4,
+                enable_categorical=True,
+                random_state=42
+            )
+
+            model.fit(X_train, y_train)
+
+            proba = model.predict_proba(X_test)[:, 1]
+            auc_scores.append(roc_auc_score(y_test, proba))
+
+        return np.mean(auc_scores)
 
     def run_data(self): 
         df = self.merge_data()
@@ -108,6 +155,7 @@ if __name__ == "__main__":
     }
     
     clean_pipeline = CleanData(data_paths_dict, 0.98).run_data()
+    
     
     
     
