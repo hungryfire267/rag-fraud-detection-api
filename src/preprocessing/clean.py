@@ -92,7 +92,33 @@ class CleanData:
         
         if "isFraud" not in keep_cols: 
             keep_cols.append("isFraud")
-        return df[keep_cols]
+            
+        importance = importance[importance.index.isin(keep_cols)]
+        return df[keep_cols], importance
+    
+    def get_redundant_pairs(self, df, numeric_cols, corr_threshold): 
+        results = []
+        corr_matrix = df[numeric_cols].corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        high_corr = upper.stack()
+        high_corr = high_corr[high_corr > corr_threshold].sort_values(ascending=False)
+
+        for (col_a, col_b), corr_val in high_corr.items():
+            missing_match = (df[col_a].isna() == df[col_b].isna()).mean()
+            results.append({"col_a": col_a, "col_b": col_b, "value_corr": corr_val, "missingness_match": missing_match})
+        return pd.DataFrame(results)
+    
+    def drop_redundant(self, df, importance_series, numerical_cols, corr_threshold):
+        redundancy_report = self.get_redundant_pairs(df, numerical_cols, corr_threshold)
+        to_drop = set()
+        for _, row in redundancy_report[redundancy_report["value_corr"] > corr_threshold].iterrows():
+            col_a, col_b = row["col_a"], row["col_b"]
+            if col_a in to_drop or col_b in to_drop:
+                continue
+            imp_a = importance_series.get(col_a, 0)
+            imp_b = importance_series.get(col_b, 0)
+            to_drop.add(col_b if imp_a >= imp_b else col_a)
+        return df.drop(columns=list(to_drop)), to_drop
     
     def get_test_auc(self, df, target_col="isFraud"): 
         y = df[target_col]
@@ -143,7 +169,7 @@ class CleanData:
         no_pvalue_obs, no_pvalue_features = df.shape
         print(f"Our reduced dataset from excluding insignificant pvalues has {no_pvalue_obs} observations and {no_pvalue_features} features")
     
-        df = self.get_feature_importance(df)
+        df, importance = self.get_feature_importance(df)
         print(df.columns)
         return missing_pvalues_result_df
         
