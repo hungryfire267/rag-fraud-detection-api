@@ -155,6 +155,29 @@ class CleanData:
             auc_scores.append(roc_auc_score(y_test, proba))
 
         return np.mean(auc_scores)
+    
+    def get_diff_columns(self, df): 
+        self.float_cols = df.select_dtypes(include="float64").columns
+        self.object_cols = df.select_dtypes(include="object").columns
+    
+    def get_numerical_categorical(self, df): 
+        self.get_diff_columns(df)
+        
+        categorical = (
+            ['ProductCD']
+            + [f'card{i}' for i in range(1, 7)]        # card1 - card6
+            + ['addr1', 'addr2']
+            + ['P_emaildomain', 'R_emaildomain']
+            + [f'M{i}' for i in range(1, 10)]           # M1 - M9
+            + ['DeviceType', 'DeviceInfo']
+            + [f'id_{i}' for i in range(12, 39)]        # id_12 - id_38
+        )
+
+        exclude = set(categorical)
+        numerical = [col for col in self.float_cols if col not in exclude]
+        
+        return numerical, categorical
+
 
     def run_data(self): 
         df = self.merge_data()
@@ -170,8 +193,8 @@ class CleanData:
         print(f"Our reduced dataset from excluding insignificant pvalues has {no_pvalue_obs} observations and {no_pvalue_features} features")
     
         df, importance = self.get_feature_importance(df)
-        print(df.columns)
-        return missing_pvalues_result_df
+        df, _ = self.drop_redundant(df, importance, self.float_cols, corr_threshold=0.9)
+        return df
         
     
 if __name__ == "__main__": 
