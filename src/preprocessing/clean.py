@@ -26,6 +26,12 @@ class CleanData:
         )
         return df
     
+    def convert_float(self, df): 
+        float_cols = df.select_dtypes(include="float64").columns
+        for col in float_cols: 
+            df[col] = df[col].astype("float32")
+        return df
+    
     def drop_dead_columns(self, df): 
         missing = df.isna().mean() 
         dead = missing[missing > self.missing_threshold].index.tolist()
@@ -39,7 +45,7 @@ class CleanData:
                 continue
             flag = df[col].isna().astype(int)
             if flag.nunique() < 2:
-                continue  # can't test, but don't drop — just skip the test
+                continue  # no missingness at all, can't test, so don't penalize it
             table = pd.crosstab(flag, df[target_col])
             if table.shape[0] < 2 or table.shape[1] < 2:
                 continue
@@ -50,17 +56,22 @@ class CleanData:
         result_df = pd.DataFrame(results).sort_values("p_value")
         result_df["significant"] = result_df["p_value"] < alpha
 
-        # columns whose missingness is itself predictive -> engineer as flags
-        informative_missing_cols = result_df.loc[
-            result_df["significant"] & (result_df["phi"].abs() >= 0.025), "column"
-        ].tolist()
+        # columns that were tested and passed
+        condition_significance = result_df["significant"] == True
+        condition_phi = result_df["phi"].abs() >= 0.025
+        relevant_result_df = result_df[condition_significance & condition_phi].copy()
+        relevant_cols = relevant_result_df["column"].tolist()
 
-        # add was_missing indicators for those, but keep ALL original columns
-        df_out = df.copy()
-        for col in informative_missing_cols:
-            df_out[f"{col}_was_missing"] = df[col].isna().astype(int)
+        # columns that were never tested (no missingness) — keep by default,
+        # since "can't test" is not the same as "not predictive"
+        tested_cols = set(result_df["column"])
+        untested_cols = [c for c in df.columns if c != target_col and c not in tested_cols]
+        relevant_cols += untested_cols
 
-        return result_df, df_out
+        if target_col not in relevant_cols:
+            relevant_cols.append(target_col)
+
+        return result_df, df[relevant_cols]
     
     def get_feature_importance(self, df, target_col="isFraud"): 
         y = df[target_col]
@@ -191,6 +202,7 @@ class CleanData:
         df = self.merge_data()
         no_merged_obs, no_merged_features = df.shape
         print(f"Our merged dataset has {no_merged_obs} observations and {no_merged_features} features")
+        df = self.convert_float(df)
         df = self.drop_dead_columns(df)
         no_dropped_obs, no_dropped_features = df.shape
         print(f"Our dropped dataset has {no_dropped_obs} observations and {no_dropped_features} features")
