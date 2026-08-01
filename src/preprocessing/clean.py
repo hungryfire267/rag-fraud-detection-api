@@ -39,26 +39,28 @@ class CleanData:
                 continue
             flag = df[col].isna().astype(int)
             if flag.nunique() < 2:
-                continue  # no missingness at all, nothing to test
-
+                continue  # can't test, but don't drop — just skip the test
             table = pd.crosstab(flag, df[target_col])
             if table.shape[0] < 2 or table.shape[1] < 2:
                 continue
-
             chi2, p, dof, expected = chi2_contingency(table)
             phi = flag.corr(df[target_col])
             results.append({"column": col, "p_value": p, "phi": phi, "missing_rate": flag.mean()})
 
         result_df = pd.DataFrame(results).sort_values("p_value")
         result_df["significant"] = result_df["p_value"] < alpha
-        
-        condition_significance = result_df["significant"] == True 
-        condition_phi = result_df["phi"].abs() >= 0.025
-        relevant_result_df = result_df[condition_significance & condition_phi].copy()
-        relevant_result_df_cols = relevant_result_df["column"].tolist()
-        if "isFraud" not in relevant_result_df_cols: 
-            relevant_result_df_cols.append("isFraud")  
-        return result_df, df[relevant_result_df_cols]
+
+        # columns whose missingness is itself predictive -> engineer as flags
+        informative_missing_cols = result_df.loc[
+            result_df["significant"] & (result_df["phi"].abs() >= 0.025), "column"
+        ].tolist()
+
+        # add was_missing indicators for those, but keep ALL original columns
+        df_out = df.copy()
+        for col in informative_missing_cols:
+            df_out[f"{col}_was_missing"] = df[col].isna().astype(int)
+
+        return result_df, df_out
     
     def get_feature_importance(self, df, target_col="isFraud"): 
         y = df[target_col]
