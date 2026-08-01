@@ -1,5 +1,5 @@
-import matplotlib.pyplot as plt
 import os
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -174,10 +174,16 @@ class CleanData:
         )
 
         exclude = set(categorical)
-        numerical = [col for col in self.float_cols if col not in exclude]
+        numerical = [col for col in df.columns if col not in exclude]
         
         return numerical, categorical
-
+    
+    def get_parquet_data(self, df, importance): 
+        output_dir = os.path.join(BASE_DIR, "data/filtered")
+        os.makedirs(output_dir, exist_ok=True)
+        df.to_parquet(os.path.join(output_dir, "filtered_final.parquet"), index=False)
+        importance = importance.reset_index().rename(columns={"index": "Feature", 0: "Importance"})
+        importance.to_parquet(os.path.join(output_dir, "filtered_importance.parquet"))
 
     def run_data(self): 
         df = self.merge_data()
@@ -193,8 +199,12 @@ class CleanData:
         print(f"Our reduced dataset from excluding insignificant pvalues has {no_pvalue_obs} observations and {no_pvalue_features} features")
     
         df, importance = self.get_feature_importance(df)
-        df, _ = self.drop_redundant(df, importance, self.float_cols, corr_threshold=0.9)
-        return df
+        
+        numerical, categorical = self.get_numerical_categorical(df)
+        df, _ = self.drop_redundant(df, importance, numerical, corr_threshold=0.9)
+        importance = importance.loc[importance.index.isin(df.columns)]
+        self.get_parquet_data(df, importance)
+        return df, importance
         
     
 if __name__ == "__main__": 
@@ -203,7 +213,10 @@ if __name__ == "__main__":
         "transaction": os.path.join(BASE_DIR, "data/raw/transaction.csv")
     }
     
-    clean_pipeline = CleanData(data_paths_dict, 0.98).run_data()
+    mi_threshold = 0.95
+    fi_threshold = 0.90
+    df = CleanData(data_paths_dict, mi_threshold, fi_threshold).run_data()
+    print(df)
     
     
     
